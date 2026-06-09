@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+env.env
+soil_model.h5
+
+instance/
+
+uploads/*
+!uploads/.gitkeep
+
+tempCodeRunnerFile.py
+
+.vscode/
+

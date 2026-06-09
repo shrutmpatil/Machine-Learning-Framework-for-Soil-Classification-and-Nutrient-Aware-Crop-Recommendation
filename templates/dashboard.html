@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Welcome, {{ current_user.username }}!</h2>
+  <p>Use the navigation bar to predict soil & crop or view your history.</p>
+
+  <hr>
+
+  <div class="card p-3 mb-3" style="position:relative;">
+    <h4>🌦️ Weather & Location Info</h4>
+
+    <div id="toast" style="display:none; position: absolute; right: 1rem; top: 1rem; background: #ffd6d6; color:#611; padding:8px 12px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.12);">
+      <strong id="toast-msg">Error</strong>
+    </div>
+
+    <ul style="list-style:none; padding-left:0; margin-bottom:0.5rem;">
+      <li><strong>City:</strong> <span id="city">Loading…</span></li>
+      <li><strong>Latitude:</strong> <span id="lat">Loading…</span></li>
+      <li><strong>Longitude:</strong> <span id="lon">Loading…</span></li>
+      <li><strong>Temperature:</strong> <span id="temp">Loading…</span></li>
+      <li><strong>Condition:</strong> <span id="cond">Loading…</span></li>
+    </ul>
+
+    <small id="source-note" style="color:#666; display:block; margin-top:6px;">Source: <span id="source">Fallback (IP)</span></small>
+  </div>
+
+  <div class="card p-3">
+    <h4>🗺️ Live Location Map</h4>
+
+    <div id="map-wrapper" style="position:relative;">
+      <iframe
+        id="map-iframe"
+        frameborder="0"
+        allowfullscreen
+        style="width:100%; height:300px; display:none;"
+      ></iframe>
+
+      <div id="map-fallback" style="width:100%; height:300px; display:flex; align-items:center; justify-content:center; color:#666; border:1px dashed #ddd;">
+        Requesting location…
+      </div>
+
+      <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+        <button id="retry-btn" style="display:none; padding:6px 10px; border-radius:6px; border:1px solid #ccc; background:#fff;">Retry Location</button>
+        <small style="color:#666;">Tip: allow location permission for accurate results</small>
+      </div>
+    </div>
+  </div>
+
+  {% set fallback = weather if weather else {
+    "city": "Unknown",
+    "latitude": "N/A",
+    "longitude": "N/A",
+    "temperature": "N/A",
+    "description": "Unavailable",
+    "map_url": ""
+  } %}
+
+  <!-- Loading overlay / spinner -->
+  <style>
+    .loader-overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255,255,255,0.6);
+      z-index: 9999;
+      font-family: sans-serif;
+    }
+    .spinner {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      border: 6px solid rgba(0,0,0,0.08);
+      border-top-color: rgba(0,0,0,0.6);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+
+  <div id="loader" class="loader-overlay" style="display:none;">
+    <div style="text-align:center;">
+      <div class="spinner"></div>
+      <div style="margin-top:8px; color:#333;">Detecting location…</div>
+    </div>
+  </div>
+
+  <script>
+    // Server provided fallback
+    var fallbackWeather = {{ fallback | tojson | safe }};
+
+    // DOM refs
+    const cityEl = document.getElementById("city");
+    const latEl = document.getElementById("lat");
+    const lonEl = document.getElementById("lon");
+    const tempEl = document.getElementById("temp");
+    const condEl = document.getElementById("cond");
+    const mapIframe = document.getElementById("map-iframe");
+    const mapFallback = document.getElementById("map-fallback");
+    const retryBtn = document.getElementById("retry-btn");
+    const loader = document.getElementById("loader");
+    const toast = document.getElementById("toast");
+    const toastMsg = document.getElementById("toast-msg");
+    const sourceNote = document.getElementById("source");
+
+    function showMap(url) {
+      mapIframe.src = url;
+      mapIframe.style.display = "block";
+      mapFallback.style.display = "none";
+    }
+
+    function initWithFallback() {
+      cityEl.innerText = fallbackWeather.city || "Unknown";
+      latEl.innerText = fallbackWeather.latitude || "N/A";
+      lonEl.innerText = fallbackWeather.longitude || "N/A";
+      tempEl.innerText = (fallbackWeather.temperature !== 'N/A' && fallbackWeather.temperature !== null)
+        ? (fallbackWeather.temperature + "°C") : "N/A";
+      condEl.innerText = fallbackWeather.description || "Unavailable";
+
+      if (fallbackWeather.map_url) {
+        showMap(fallbackWeather.map_url);
+      } else {
+        mapIframe.style.display = "none";
+        mapFallback.style.display = "flex";
+        mapFallback.innerText = "Fallback location unavailable.";
+      }
+    }
+
+    function showLoader(){ loader.style.display = "flex"; }
+    function hideLoader(){ loader.style.display = "none"; }
+    function showToast(message, timeout=3500){
+      toastMsg.innerText = message;
+      toast.style.display = "block";
+      setTimeout(()=>{ toast.style.display = "none"; }, timeout);
+    }
+    function useFallback() {
+      initWithFallback();
+      retryBtn.style.display = "inline-block";
+      sourceNote.innerText = "Fallback (IP)";
+    }
+
+    // ---- Fast geolocation strategy config ----
+    const QUICK_TIMEOUT_MS = 3000;   // quick attempt timeout (ms)
+    const MAXIMUM_AGE_MS = 60 * 1000; // accept cached positions up to 60s old
+    const ENABLE_HIGH_ACCURACY_QUICK = false; // faster/coarser quick attempt
+    const START_WATCH_FOR_UPDATES = true; // start watchPosition afterwards
+
+    function getPositionWithTimeout(timeoutMs, options) {
+      return new Promise((resolve) => {
+        let finished = false;
+        const timer = setTimeout(() => {
+          if (!finished) { finished = true; resolve(null); }
+        }, timeoutMs);
+
+        if (!navigator.geolocation) {
+          clearTimeout(timer);
+          resolve(null);
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            resolve(pos);
+          },
+          (err) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            resolve(null);
+          },
+          options
+        );
+      });
+    }
+
+    async function attemptQuickGeoThenMaybeWatch() {
+      showLoader();
+      sourceNote.innerText = "Attempting quick geolocation…";
+
+      const quickOptions = {
+        enableHighAccuracy: ENABLE_HIGH_ACCURACY_QUICK,
+        timeout: QUICK_TIMEOUT_MS,
+        maximumAge: MAXIMUM_AGE_MS,
+      };
+
+      const pos = await getPositionWithTimeout(QUICK_TIMEOUT_MS, quickOptions);
+
+      if (pos) {
+        try {
+          const lat = pos.coords.latitude;
+          const lon = pos.coords.longitude;
+          const resp = await fetch(`/get_weather?lat=${lat}&lon=${lon}`);
+          const data = await resp.json();
+          if (!data.error) {
+            cityEl.innerText = data.city || "Unknown";
+            latEl.innerText = data.latitude;
+            lonEl.innerText = data.longitude;
+            tempEl.innerText = (data.temperature !== undefined && data.temperature !== null) ? (data.temperature + "°C") : "N/A";
+            condEl.innerText = data.description || "Unavailable";
+            if (data.map_url) showMap(data.map_url);
+            sourceNote.innerText = "Browser (quick)";
+            retryBtn.style.display = "none";
+          } else {
+            useFallback();
+            showToast("Couldn't fetch precise weather — using fallback.");
+          }
+        } catch (err) {
+          console.error("Error fetching weather:", err);
+          useFallback();
+        } finally {
+          hideLoader();
+        }
+      } else {
+        hideLoader();
+        useFallback();
+        showToast("Using fallback location (GPS slow or denied).");
+      }
+
+      // watchPosition for improved fix (optional)
+      if (START_WATCH_FOR_UPDATES && navigator.geolocation) {
+        try {
+          const watchOptions = { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 };
+          const watchId = navigator.geolocation.watchPosition(async (pos) => {
+            try {
+              const lat = pos.coords.latitude;
+              const lon = pos.coords.longitude;
+              const resp = await fetch(`/get_weather?lat=${lat}&lon=${lon}`);
+              const data = await resp.json();
+              if (!data.error) {
+                cityEl.innerText = data.city || "Unknown";
+                latEl.innerText = data.latitude;
+                lonEl.innerText = data.longitude;
+                tempEl.innerText = (data.temperature !== undefined && data.temperature !== null) ? (data.temperature + "°C") : "N/A";
+                condEl.innerText = data.description || "Unavailable";
+                if (data.map_url) showMap(data.map_url);
+                sourceNote.innerText = "Browser (updated)";
+                retryBtn.style.display = "none";
+              }
+            } catch (err) {
+              console.warn("watchPosition update failed:", err);
+            } finally {
+              navigator.geolocation.clearWatch(watchId); // remove if you want continuous updates
+            }
+          }, (err) => {
+            console.warn("watchPosition error:", err);
+          }, watchOptions);
+        } catch (err) {
+          console.warn("Could not start watchPosition:", err);
+        }
+      }
+    }
+
+    retryBtn.addEventListener("click", () => {
+      retryBtn.style.display = "none";
+      mapIframe.style.display = "none";
+      mapFallback.style.display = "flex";
+      mapFallback.innerText = "Requesting location…";
+      attemptQuickGeoThenMaybeWatch();
+    });
+
+    // Initialize with fallback immediately, then attempt quick geo
+    initWithFallback();
+    attemptQuickGeoThenMaybeWatch();
+  </script>
+{% endblock %}

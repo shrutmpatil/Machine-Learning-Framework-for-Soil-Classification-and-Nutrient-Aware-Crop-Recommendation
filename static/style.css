@@ -1,0 +1,55 @@
+body {
+    background-color: #f8f9fa;
+}
+
+.navbar {
+    margin-bottom: 2rem;
+}
+
+.card {
+    border: none;
+    border-radius: 0.75rem;
+}
+
+.card-title {
+    font-weight: 600;
+}
+
+.btn-primary {
+    background-color: #28a745;
+    border-color: #28a745;
+}
+
+.btn-primary:hover {
+    background-color: #218838;
+    border-color: #1e7e34;
+}
+
+.form-control:focus {
+    border-color: #28a745;
+    box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
+}
+
+.custom-file-input:focus ~ .custom-file-label {
+    border-color: #28a745;
+    box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
+}
+
+.weather-icon {
+    width: 80px;
+    height: 80px;
+    margin: auto;
+}
+
+.small-weather-icon {
+    width: 50px;
+    height: 50px;
+}
+
+#npkChart, #phChart {
+    height: 300px !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: #e2e6ea;
+}

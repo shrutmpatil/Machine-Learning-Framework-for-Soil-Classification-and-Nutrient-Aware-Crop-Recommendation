@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2>Crop & Soil Prediction</h2>
+
+  <!-- Prediction Form -->
+  <form method="POST" enctype="multipart/form-data" class="mb-4">
+    <div class="card p-3">
+      <div class="form-group mb-3">
+        <label for="mode">Select Mode:</label>
+        <select name="mode" id="mode" class="form-control">
+          <option value="manual">Manual</option>
+          <option value="auto">Auto (ESP32 Step-by-Step)</option>
+        </select>
+      </div>
+
+      <!-- Manual Input Fields -->
+      <div id="manual-inputs">
+        <div class="form-group mb-2">
+          <input type="number" step="0.01" name="nitrogen" placeholder="Nitrogen (N)" class="form-control">
+        </div>
+        <div class="form-group mb-2">
+          <input type="number" step="0.01" name="phosphorus" placeholder="Phosphorus (P)" class="form-control">
+        </div>
+        <div class="form-group mb-2">
+          <input type="number" step="0.01" name="potassium" placeholder="Potassium (K)" class="form-control">
+        </div>
+        <div class="form-group mb-2">
+          <input type="number" step="0.01" name="ph" placeholder="pH Value" class="form-control">
+        </div>
+      </div>
+
+      <!-- Auto Step-by-Step Inputs -->
+      <div id="auto-inputs" style="display:none;">
+        <div class="card mt-3">
+          <div class="card-body">
+            <h5>Step <span id="sensor-step">1</span> of 4</h5>
+            <p id="sensor-value">Waiting for Nitrogen...</p>
+            <button type="button" id="accept-btn" class="btn btn-success">Accept & Next</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hidden fields for auto mode -->
+      <input type="hidden" name="nitrogen" id="auto-nitrogen">
+      <input type="hidden" name="phosphorus" id="auto-phosphorus">
+      <input type="hidden" name="potassium" id="auto-potassium">
+      <input type="hidden" name="ph" id="auto-ph">
+
+      <!-- File Upload -->
+      <div class="form-group mt-3">
+        <label for="image">Upload Soil Image:</label>
+        <input type="file" name="image" id="image" class="form-control" required>
+      </div>
+
+      <button type="submit" class="btn btn-primary mt-3">Predict</button>
+    </div>
+  </form>
+
+  <!-- Prediction Result -->
+  {% if prediction %}
+    <div class="card mt-4">
+      <div class="card-body">
+        <h4>Prediction Result</h4>
+        <p><strong>Soil Type:</strong> {{ prediction.soil_type }}</p>
+        <p><strong>Recommended Crop:</strong> {{ prediction.recommended_crop }}</p>
+      </div>
+    </div>
+  {% endif %}
+
+  <!-- Uploaded Image Preview -->
+  {% if image_preview %}
+    <div class="card mt-4">
+      <div class="card-body">
+        <h5>Uploaded Image</h5>
+        <img src="{{ image_preview }}" alt="Uploaded Image" class="img-fluid" style="max-width: 300px;">
+      </div>
+    </div>
+  {% endif %}
+</div>
+
+<!-- Toggle Inputs + Stepper Logic -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  const modeSelect = document.getElementById("mode");
+  const manualInputs = document.getElementById("manual-inputs");
+  const autoInputs = document.getElementById("auto-inputs");
+
+  const stepText = document.getElementById("sensor-step");
+  const valueText = document.getElementById("sensor-value");
+  const acceptBtn = document.getElementById("accept-btn");
+
+  // Hidden inputs
+  const hiddenN = document.getElementById("auto-nitrogen");
+  const hiddenP = document.getElementById("auto-phosphorus");
+  const hiddenK = document.getElementById("auto-potassium");
+  const hiddenPh = document.getElementById("auto-ph");
+
+  let step = 1;
+  const labels = ["Nitrogen", "Phosphorus", "Potassium", "pH"];
+
+  // For testing: mock values (replace with live ESP32 fetch)
+  const mockValues = [120, 25, 40, 6.5];
+
+  function toggleInputs() {
+    if (modeSelect.value === "manual") {
+      manualInputs.style.display = "block";
+      autoInputs.style.display = "none";
+    } else {
+      manualInputs.style.display = "none";
+      autoInputs.style.display = "block";
+      step = 1;
+      acceptBtn.disabled = false;
+      updateStep();
+    }
+  }
+
+  function updateStep() {
+    valueText.textContent = `${labels[step-1]}: ${mockValues[step-1]}`;
+    stepText.textContent = step;
+  }
+
+  acceptBtn.addEventListener("click", function() {
+    // Fill hidden inputs
+    if (step === 1) hiddenN.value = mockValues[0];
+    if (step === 2) hiddenP.value = mockValues[1];
+    if (step === 3) hiddenK.value = mockValues[2];
+    if (step === 4) hiddenPh.value = mockValues[3];
+
+    if (step < 4) {
+      step++;
+      updateStep();
+    } else {
+      valueText.textContent = "✅ All values received. You can now upload soil image and Predict.";
+      acceptBtn.disabled = true;
+    }
+  });
+
+  modeSelect.addEventListener("change", toggleInputs);
+  toggleInputs(); // initialize on load
+});
+</script>
+{% endblock %}

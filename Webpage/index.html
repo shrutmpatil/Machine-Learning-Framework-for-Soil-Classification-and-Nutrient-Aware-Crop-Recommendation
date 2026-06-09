@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgriSense</title>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body {
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      background: #f7fdf9;
+      color: #333;
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .tab-link.active { font-weight: bold; color: #d1fae5; }
+    .card-grid { display: grid; gap: 1.5rem; margin-top: 1rem; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+    .card { background: white; border-radius: 12px; padding: 1rem; display: flex; gap: 1rem; box-shadow: 0 2px 6px rgba(0,0,0,0.08); transition: transform 0.2s; }
+    .card:hover { transform: translateY(-3px); }
+    .card .icon { width: 28px; height: 28px; color: #2f855a; }
+    .card .value { font-size: 1.5rem; font-weight: bold; }
+    #loading { display: none; }
+    #manual-inputs { display: none; }
+    #map { height: 400px; }
+    #camera-preview { display: none; width: 100%; max-width: 300px; margin-top: 0.5rem; }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div class="flex flex-col md:flex-row min-h-screen">
+    <!-- Sidebar -->
+    <aside class="bg-green-700 text-white w-full md:w-64 p-6 space-y-6">
+      <div class="text-2xl font-bold mb-6 flex items-center gap-2">
+        <i data-lucide="leaf" class="w-6 h-6"></i> AgriSense
+      </div>
+      <nav class="space-y-4 text-sm">
+        <a href="#" onclick="showTab('dashboard')" class="flex items-center gap-2 hover:text-green-200 tab-link active" data-tab="dashboard"><i data-lucide="layout-dashboard"></i> Dashboard</a>
+        <a href="#" onclick="showTab('history')" class="flex items-center gap-2 hover:text-green-200 tab-link" data-tab="history"><i data-lucide="history"></i> History</a>
+        <a href="#" onclick="showTab('village-news')" class="flex items-center gap-2 hover:text-green-200 tab-link" data-tab="village-news"><i data-lucide="map-pin"></i> Village & News</a>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 p-8">
+      <!-- Dashboard Tab -->
+      <div id="dashboard" class="tab-content active">
+        <h1 class="text-3xl font-bold mb-4">Dashboard</h1>
+        <p class="text-gray-600 mb-6">Welcome to AgriSense, your smart farming assistant for better crop management and insights.</p>
+
+        <!-- Location and Weather -->
+        <div class="bg-white p-6 rounded-xl shadow mb-6">
+          <h2 class="text-lg font-bold mb-4">Location and Weather</h2>
+          <div class="flex gap-4 mb-4">
+            <input type="text" id="location" placeholder="Enter your city" class="p-2 border rounded flex-1" />
+            <button onclick="getWeather()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">Get Weather</button>
+          </div>
+          <div class="card-grid">
+            <div class="card"><i data-lucide="thermometer" class="icon"></i><div><h2>Air Temperature</h2><div id="weather-temp" class="value">--°C</div></div></div>
+            <div class="card"><i data-lucide="droplets" class="icon"></i><div><h2>Humidity</h2><div id="weather-humidity" class="value">--%</div></div></div>
+            <div class="card"><i data-lucide="cloud-rain" class="icon"></i><div><h2>Precipitation</h2><div id="weather-precipitation" class="value">--mm</div></div></div>
+          </div>
+        </div>
+
+        <!-- Crop Recommendation System -->
+        <div class="bg-white p-6 rounded-xl shadow mb-6">
+          <h2 class="text-lg font-bold mb-4">Crop Recommendation</h2>
+          <!-- Soil Photo -->
+          <div class="mb-4">
+            <label class="block mb-2">Upload Soil Photo or Capture via Camera</label>
+            <div class="flex gap-2">
+              <input type="file" id="soil-photo" accept="image/*" class="p-2 border rounded" />
+              <button onclick="startCamera()" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg">Use Camera</button>
+            </div>
+            <video id="camera-preview" autoplay playsinline></video>
+            <div class="flex gap-2 mt-2">
+              <button id="capture-btn" onclick="captureImage()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg hidden">Capture Image</button>
+              <button id="stop-camera-btn" onclick="stopCamera()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg hidden">Stop Camera</button>
+            </div>
+            <p id="soil-type" class="mt-2 text-gray-600">Soil Type: --</p>
+          </div>
+          <!-- Data Source Options -->
+          <div class="mb-4">
+            <label class="block mb-2">Choose Data Source</label>
+            <label><input type="radio" name="data-source" value="sensor" onclick="toggleManual(false)"> Fetch from Sensor</label>
+            <label><input type="radio" name="data-source" value="manual" onclick="toggleManual(true)"> Enter Manually</label>
+          </div>
+          <!-- Manual Inputs -->
+          <div id="manual-inputs" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <input type="number" id="soil-n" class="p-2 border rounded" placeholder="Enter Nitrogen (N)" />
+            <input type="number" id="soil-p" class="p-2 border rounded" placeholder="Enter Phosphorus (P)" />
+            <input type="number" id="soil-k" class="p-2 border rounded" placeholder="Enter Potassium (K)" />
+            <input type="number" id="soil-ph" step="0.1" class="p-2 border rounded" placeholder="Enter pH Value" />
+          </div>
+          <button onclick="getRecommendation()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">Get Recommendation</button>
+        </div>
+
+        <!-- Output and Analysis Graph -->
+        <div id="loading" class="text-yellow-500 font-semibold mt-4">Loading...</div>
+        <div id="output" class="mt-4 p-4 bg-gray-100 rounded"></div>
+        <div class="mt-6">
+          <h2 class="text-lg font-bold mb-4">Analysis Graph</h2>
+          <canvas id="analysis-chart" width="400" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- History Tab -->
+      <div id="history" class="tab-content">
+        <h1 class="text-2xl font-bold mb-4">History</h1>
+        <ul id="history-list" class="list-disc pl-6"></ul>
+      </div>
+
+      <!-- Village & News Tab -->
+      <div id="village-news" class="tab-content">
+        <h1 class="text-2xl font-bold mb-4">Village Location & Agri News</h1>
+        <div class="mb-6">
+          <h2 class="text-lg font-bold mb-2">Village Location</h2>
+          <div id="map"></div>
+        </div>
+        <div>
+          <h2 class="text-lg font-bold mb-2">Agri News</h2>
+          <ul id="news-list" class="list-disc pl-6"></ul>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let stream = null;
+    let capturedImage = null;
+
+    function showTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.tab-link').forEach(link => link.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      document.querySelector(`.tab-link[data-tab="${tabId}"]`).classList.add('active');
+      if (tabId === 'village-news') {
+        initMap();
+        fetchAgriNews();
+      }
+    }
+
+    function toggleManual(show) {
+      document.getElementById('manual-inputs').style.display = show ? 'grid' : 'none';
+    }
+
+    async function startCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const video = document.getElementById('camera-preview');
+        video.srcObject = stream;
+        video.style.display = 'block';
+        document.getElementById('capture-btn').classList.remove('hidden');
+        document.getElementById('stop-camera-btn').classList.remove('hidden');
+        document.getElementById('soil-photo').value = ''; // Clear file input
+      } catch (err) {
+        console.error('Failed to access camera:', err);
+        document.getElementById('soil-type').innerText = 'Soil Type: Failed to access camera.';
+      }
+    }
+
+    function captureImage() {
+      const video = document.getElementById('camera-preview');
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      canvas.toBlob(blob => {
+        capturedImage = new File([blob], 'captured-soil.jpg', { type: 'image/jpeg' });
+      }, 'image/jpeg');
+    }
+
+    function stopCamera() {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      document.getElementById('camera-preview').style.display = 'none';
+      document.getElementById('capture-btn').classList.add('hidden');
+      document.getElementById('stop-camera-btn').classList.add('hidden');
+    }
+
+    async function recognizeSoil() {
+      const fileInput = document.getElementById('soil-photo');
+      const file = fileInput.files[0] || capturedImage;
+      if (!file) {
+        document.getElementById('soil-type').innerText = 'Soil Type: No image selected or captured.';
+        return;
+      }
+      const formData = new FormData();
+      formData.append('image', file);
+      document.getElementById('loading').style.display = 'block';
+      try {
+        const res = await fetch('http://localhost:5000/recognize-soil', {
+          method: 'POST',
+          body: formData
+        });
+        const result = await res.json();
+        if (result.error) {
+          document.getElementById('soil-type').innerText = `Soil Type: ${result.error}`;
+        } else {
+          document.getElementById('soil-type').innerText = `Soil Type: ${result.type}`;
+        }
+      } catch (err) {
+        document.getElementById('soil-type').innerText = 'Soil Type: Failed to recognize.';
+      }
+      document.getElementById('loading').style.display = 'none';
+    }
+
+    async function getRecommendation() {
+      const source = document.querySelector('input[name="data-source"]:checked')?.value;
+      const soilType = document.getElementById('soil-type').innerText.replace('Soil Type: ', '');
+      let data = { soil_type: soilType };
+
+      if (!soilType || soilType === '--' || soilType.includes('Failed')) {
+        document.getElementById('output').innerText = 'Please recognize soil type first.';
+        return;
+      }
+
+      if (source === 'sensor') {
+        try {
+          const res = await fetch('http://localhost:5000/sensor-data');
+          data = { ...data, ...(await res.json()) };
+        } catch (err) {
+          document.getElementById('output').innerText = 'Failed to fetch sensor data.';
+          return;
+        }
+      } else if (source === 'manual') {
+        data = {
+          ...data,
+          nitrogen: document.getElementById('soil-n').value,
+          phosphorus: document.getElementById('soil-p').value,
+          potassium: document.getElementById('soil-k').value,
+          ph: document.getElementById('soil-ph').value
+        };
+      } else {
+        document.getElementById('output').innerText = 'Please select a data source.';
+        return;
+      }
+
+      document.getElementById('loading').style.display = 'block';
+      try {
+        const res = await fetch('http://localhost:5000/recommend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        const result = await res.json();
+        if (result.error) {
+          document.getElementById('output').innerText = result.error;
+        } else {
+          document.getElementById('output').innerText = `Recommended Crop: ${result.crop}`;
+          drawAnalysisGraph(data);
+          fetchHistory();
+        }
+      } catch (err) {
+        document.getElementById('output').innerText = 'Failed to fetch recommendation.';
+      }
+      document.getElementById('loading').style.display = 'none';
+    }
+
+    function drawAnalysisGraph(data) {
+      const ctx = document.getElementById('analysis-chart').getContext('2d');
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: ['Nitrogen', 'Phosphorus', 'Potassium', 'pH'],
+          datasets: [{
+            label: 'Soil Levels',
+            data: [data.nitrogen || 0, data.phosphorus || 0, data.potassium || 0, data.ph || 0],
+            backgroundColor: ['#2f855a', '#48bb78', '#68d391', '#9ae6b4']
+          }]
+        },
+        options: {
+          scales: {
+            y: { beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    async function getWeather() {
+      const city = document.getElementById('location').value;
+      if (!city) return;
+      const apiKey = 'd5e492a3920d64f62a4f2fa38b3e87f4'; // Replace with your API key
+      try {
+        const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${city}&units=metric&appid=${apiKey}`);
+        const weather = await res.json();
+        document.getElementById('weather-temp').innerText = `${weather.main.temp}°C`;
+        document.getElementById('weather-humidity').innerText = `${weather.main.humidity}%`;
+        document.getElementById('weather-precipitation').innerText = weather.rain ? `${weather.rain['1h']}mm` : '0mm';
+      } catch (err) {
+        console.error('Failed to fetch weather');
+      }
+    }
+
+    async function fetchHistory() {
+      try {
+        const res = await fetch('http://localhost:5000/history');
+        const history = await res.json();
+        const list = document.getElementById('history-list');
+        list.innerHTML = '';
+        history.forEach(item => {
+          const li = document.createElement('li');
+          li.innerText = `${item.time}: ${item.result}`;
+          list.appendChild(li);
+        });
+      } catch {
+        document.getElementById('history-list').innerHTML = '<li class="text-red-500">Failed to load history</li>';
+      }
+    }
+
+    function initMap() {
+      const map = L.map('map').setView([51.505, -0.09], 13); // Default location, update with actual village coords
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+    }
+
+    async function fetchAgriNews() {
+      const apiKey = 'ce929c2e820e4cde8f0ddb4cbb2b4147'; // Replace with your NewsAPI key
+      try {
+        const res = await fetch(`https://newsapi.org/v2/everything?q=agriculture&apiKey=${apiKey}`);
+        const news = await res.json();
+        const list = document.getElementById('news-list');
+        list.innerHTML = '';
+        news.articles.slice(0, 5).forEach(article => {
+          const li = document.createElement('li');
+          li.innerHTML = `<a href="${article.url}" target="_blank">${article.title}</a> - ${article.source.name}`;
+          list.appendChild(li);
+        });
+      } catch {
+        document.getElementById('news-list').innerHTML = '<li class="text-red-500">Failed to load news</li>';
+      }
+    }
+
+    lucide.createIcons();
+    fetchHistory();
+  </script>
+</body>
+</html>

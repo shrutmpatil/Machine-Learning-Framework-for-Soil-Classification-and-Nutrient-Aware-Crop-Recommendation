@@ -1,0 +1,341 @@
+"""# app2.py
+from flask import Flask, render_template, redirect, url_for, request, flash, send_file
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    login_user,
+    login_required,
+    logout_user,
+    current_user,
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+import os
+import numpy as np
+import joblib
+from tensorflow.keras.models import load_model
+from PIL import Image, ExifTags
+from datetime import datetime
+import pandas as pd
+import io
+
+# ---------------- Flask Setup ----------------
+app = Flask(__name__)
+app.config["SECRET_KEY"] = "secretkey123"  # change in production
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///site.db"
+app.config["UPLOAD_FOLDER"] = "static/uploads"
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+
+
+# ---------------- Database Models ----------------
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password = db.Column(db.String(200), nullable=False)
+    predictions = db.relationship("PredictionHistory", backref="author", lazy=True)
+
+
+class PredictionHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    nitrogen = db.Column(db.Float, nullable=False)
+    phosphorus = db.Column(db.Float, nullable=False)
+    potassium = db.Column(db.Float, nullable=False)
+    ph = db.Column(db.Float, nullable=False)
+    soil_type = db.Column(db.String(50), nullable=False)
+    crop = db.Column(db.String(50), nullable=False)
+    image_path = db.Column(db.String(200), nullable=True)
+    date = db.Column(db.DateTime, default=datetime.utcnow)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+
+# ---------------- Load ML Models ----------------
+soil_model = load_model("soil_model.h5")
+soil_encoder = joblib.load("soil_encoder.pkl")
+scaler = joblib.load("scaler.pkl")
+crop_model = joblib.load("crop_model.pkl")
+crop_encoder = joblib.load("crop_encoder.pkl")
+
+
+# ---------------- Helpers ----------------
+def correct_image_orientation(image):
+    try:
+        exif = image._getexif()
+        if exif:
+            for orientation in ExifTags.TAGS.keys():
+                if ExifTags.TAGS[orientation] == "Orientation":
+                    break
+            orientation_value = exif.get(orientation, None)
+            if orientation_value == 3:
+                image = image.rotate(180, expand=True)
+            elif orientation_value == 6:
+                image = image.rotate(270, expand=True)
+            elif orientation_value == 8:
+                image = image.rotate(90, expand=True)
+    except Exception as e:
+        print("Orientation correction error:", e)
+    return image
+
+
+# ---------------- Routes ----------------
+@app.route("/")
+@login_required
+def dashboard():
+    return render_template("dashboard.html")
+
+
+# -------- Authentication --------
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form["username"]
+        email = request.form["email"]
+        password = generate_password_hash(request.form["password"])
+        user = User(username=username, email=email, password=password)
+        db.session.add(user)
+        db.session.commit()
+        flash("Account created! Please log in.", "success")
+        return redirect(url_for("login"))
+    return render_template("register.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        user = User.query.filter_by(email=request.form["email"]).first()
+        if user and check_password_hash(user.password, request.form["password"]):
+            login_user(user)
+            return redirect(url_for("dashboard"))
+        else:
+            flash("Invalid credentials", "danger")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
+
+# -------- Prediction --------
+@app.route("/predict", methods=["GET", "POST"])
+@login_required
+def predict():
+    prediction_result = None
+    image_preview = None
+
+    if request.method == "POST":
+        try:
+            print("Starting prediction process...")
+            file = request.files.get("image")
+            if not file or file.filename == "":
+                flash("Please upload an image.", "danger")
+                return render_template("predict.html")
+
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+            file.save(filepath)
+            print(f"Image saved to: {filepath}")
+
+            img = Image.open(filepath).convert("RGB")
+            img = correct_image_orientation(img)
+            img_resized = img.resize((224, 224))
+            img_array = np.expand_dims(np.array(img_resized) / 255.0, axis=0)
+            print("Image processed.")
+
+            # Soil prediction
+            soil_pred = soil_model.predict(img_array)
+            soil_label_str = soil_encoder.inverse_transform([np.argmax(soil_pred)])[0]
+            print(f"Soil type predicted: {soil_label_str}")
+
+            image_preview = os.path.join("uploads", filename).replace(os.sep, "/")
+
+            # NPK + pH
+            try:
+                N = float(request.form.get("nitrogen", 0))
+                P = float(request.form.get("phosphorus", 0))
+                K = float(request.form.get("potassium", 0))
+                pH = float(request.form.get("ph", 7))
+                print(f"NPK pH: {N}, {P}, {K}, {pH}")
+            except ValueError:
+                flash("Invalid numeric values entered!", "danger")
+                return render_template("predict.html")
+
+            nutrients = np.array([[N, P, K, pH]])
+            nutrients_scaled = scaler.transform(nutrients)
+            soil_encoded = soil_encoder.transform([soil_label_str])[0]
+            features = np.hstack((nutrients_scaled, [[soil_encoded]]))
+            print("Features prepared.")
+
+            # Crop prediction
+            crop_pred = crop_model.predict(features)
+            crop_names = crop_encoder.inverse_transform(crop_pred)[0]
+            crop_name = ", ".join(crop_names)
+            print(f"Crop predicted: {crop_name}")
+
+            prediction_result = {
+                "soil_type": soil_label_str,
+                "recommended_crop": crop_name,
+            }
+
+            # Save history
+            history = PredictionHistory(
+                nitrogen=N,
+                phosphorus=P,
+                potassium=K,
+                ph=pH,
+                soil_type=soil_label_str,
+                crop=crop_name,
+                image_path=filepath,
+                author=current_user,
+            )
+            db.session.add(history)
+            db.session.commit()
+            print("History saved.")
+
+        except Exception as e:
+            db.session.rollback()
+            print(f"Prediction error: {str(e)}")
+            flash(f"Error: {str(e)}", "danger")
+
+    return render_template(
+        "predict.html", prediction=prediction_result, image_preview=image_preview
+    )
+
+
+# -------- History --------
+@app.route("/history")
+@login_required
+def history():
+    records = (
+        PredictionHistory.query.filter_by(user_id=current_user.id)
+        .order_by(PredictionHistory.date.desc())
+        .all()
+    )
+    return render_template("history.html", records=records)
+
+
+# -------- Download History as Excel --------
+@app.route("/download_history")
+@login_required
+def download_history():
+    records = PredictionHistory.query.filter_by(user_id=current_user.id).all()
+    data = [
+        {
+            "Date": r.date,
+            "Nitrogen": r.nitrogen,
+            "Phosphorus": r.phosphorus,
+            "Potassium": r.potassium,
+            "pH": r.ph,
+            "Soil Type": r.soil_type,
+            "Crop": r.crop,
+            "Image Filename": os.path.basename(r.image_path) if r.image_path else "",
+        }
+        for r in records
+    ]
+    df = pd.DataFrame(data)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output) as writer:
+        df.to_excel(writer, index=False, sheet_name="History")
+    output.seek(0)
+    return send_file(
+        output,
+        download_name="prediction_history.xlsx",
+        as_attachment=True,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+# ---------------- Run ----------------
+# ---------------- Run ----------------
+if __name__ == "__main__":
+    import socket
+
+    with app.app_context():
+        db.create_all()
+    # Detect local IP
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    print(f"\n🌐 Open on your phone: http://{local_ip}:5000\n")
+    app.run(host="0.0.0.0", port=5000, debug=True)
+"""
+<!-- dashboard.html 
+{% extends "base.html" %}
+{% block content %}
+    <h2>Welcome, {{ current_user.username }}!</h2>
+    <p>Use the navigation bar to predict soil & crop or view your history.</p>
+{% endblock %}-->
+<!-- dashboard.html -->
+<!-- base.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgriPredict</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+        <a class="navbar-brand" href="{{ url_for('dashboard') }}">AgriPredict</a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav mr-auto">
+                {% if current_user.is_authenticated %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('predict') }}">Predict</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('history') }}">History</a>
+                    </li>
+                {% endif %}
+            </ul>
+            <ul class="navbar-nav">
+                {% if current_user.is_authenticated %}
+                    <li class="nav-item">
+                        <span class="nav-link">{{ current_user.username }}</span>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+                    </li>
+                {% else %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('login') }}">Login</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('register') }}">Register</a>
+                    </li>
+                {% endif %}
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.3/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+</body>
+</html> okay these are the three codes i want u to update them in such a way that they have a additional feature of  weather in dashboard and also live location of farmer also tell where i will give the api keys as well for these give me the all three modified codes dont remove any existing thing from them just add what i asked for i just want the updated with existing code and addition i asked for
