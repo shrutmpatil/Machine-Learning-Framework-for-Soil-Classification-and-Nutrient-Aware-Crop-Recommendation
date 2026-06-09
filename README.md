@@ -496,3 +496,11 @@ MIT License — Copyright (c) 2026 Shrut Mahendra Patil
 - The React frontend uses `lucide`'s `createIcons()` for icon rendering; ensure `lucide-react` is installed via `npm install`.
 - Windows path separators in `data_collection.py` will need updating for Linux/macOS deployments.
 - For phone access on the same Wi-Fi network, set `USE_HTTPS = False` in `app2.py` and open `http://<LAN_IP>:5000` on your phone.
+
+## Model Files
+
+Download soil_model.h5 from:
+
+https://huggingface.co/shrutmpatil/soil-classification-model
+
+Place the file in the project root directory before running the application.
